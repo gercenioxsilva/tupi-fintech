@@ -4,7 +4,7 @@ Implementação de uma API em Go para processamento de transações EMV baseada 
 
 ## Visão geral
 
-O fluxo atualizado atende ao desafio original e agora separa explicitamente os caminhos de comando e consulta:
+O fluxo atualizado atende ao desafio original e separa explicitamente os caminhos de comando e consulta:
 
 1. Recebe uma transação EMV simulada via HTTP.
 2. Decodifica TLVs (`5A`, `5F24`, `9F34`).
@@ -14,7 +14,7 @@ O fluxo atualizado atende ao desafio original e agora separa explicitamente os c
 6. Expõe consultas de leitura desacopladas do fluxo de comando.
 7. Mantém healthcheck, métricas Prometheus e documentação Swagger/OpenAPI.
 
-## Arquitetura
+## Estrutura do projeto
 
 ```text
 cmd/api                          # bootstrap da aplicação
@@ -26,26 +26,21 @@ internal/transactions
 └── interfaces/http              # handlers e roteamento
 ```
 
-### Vertical slice
+## Arquitetura da aplicação
 
-O slice `transactions` continua encapsulando domínio, aplicação, infraestrutura e interface HTTP, preservando o padrão vertical slice.
+A arquitetura detalhada agora está documentada em [`docs/architecture.md`](docs/architecture.md), incluindo:
 
-### DDD + SOLID
+- visão em camadas e por fluxo;
+- diagramas Mermaid para request flow, componentes e implantação;
+- pontos fortes e trade-offs da implementação atual;
+- análise de escalabilidade com gargalos, riscos e roadmap recomendado.
 
-- **Domain** concentra invariantes e validações.
-- **Application** separa `CommandService` e `QueryService`.
-- **Infrastructure** implementa adaptadores PostgreSQL e integrações externas.
-- **Interfaces** expõe endpoints HTTP sem acoplamento ao banco.
-- Dependências seguem inversion via interfaces (`TransactionWriter` e `TransactionReader`).
+### Resumo arquitetural
 
-### CQRS aplicado
-
-A adoção de CQRS foi considerada viável porque o fluxo já possuía um caso de uso de escrita bem definido. A implementação foi feita de maneira pragmática:
-
-- **Comandos**: `POST /api/v1/emv/transactions` processa e grava a transação.
-- **Consultas**: `GET /api/v1/emv/transactions` e `GET /api/v1/emv/transactions/{correlationId}` usam a projeção de leitura persistida.
-
-Ainda usamos a mesma tabela PostgreSQL para evitar complexidade prematura, mas o contrato de aplicação já separa leitura e escrita, facilitando futura evolução para read models dedicados.
+- **Vertical slice**: o slice `transactions` encapsula domínio, aplicação, infraestrutura e interface HTTP.
+- **DDD + SOLID**: o domínio concentra invariantes; a aplicação orquestra casos de uso; a infraestrutura implementa adaptadores; a interface HTTP expõe contratos externos.
+- **CQRS pragmático**: comandos e consultas já possuem serviços separados, embora ainda compartilhem a mesma tabela PostgreSQL.
+- **Observabilidade básica**: há logs estruturados, métricas em memória expostas em `/metrics` e endpoints operacionais como `/healthz`.
 
 ## Endpoints
 
@@ -83,6 +78,7 @@ Interface Swagger UI para explorar e testar os endpoints da aplicação.
 
 - Go 1.23+
 - Docker + Docker Compose
+- `psql` disponível no ambiente quando a aplicação for executada fora de containers
 
 ### Com Go
 
@@ -106,6 +102,7 @@ Depois de subir a aplicação, acesse:
 - `http://localhost:8080/swagger`
 - `http://localhost:8080/openapi.json`
 - `http://localhost:8080/healthz`
+- `http://localhost:8080/metrics`
 
 ## Variáveis de ambiente
 
@@ -131,6 +128,35 @@ curl -X POST http://localhost:8080/api/v1/emv/transactions \
   }'
 ```
 
+## Escalabilidade: leitura executiva
+
+Hoje o projeto está **bem estruturado para evoluir**, mas **ainda não está pronto para alta escala sem ajustes importantes**.
+
+### O que favorece a escalabilidade
+
+- separação entre command side e query side no nível de aplicação;
+- handlers HTTP stateless, facilitando scale-out horizontal;
+- `http.Server` com timeout de leitura de cabeçalho e shutdown gracioso;
+- índice em `processed_at` para listagem recente;
+- deployment Kubernetes e compose para ambientes de execução.
+
+### O que limita a escala neste momento
+
+- o repositório usa o binário `psql` via `os/exec` em cada operação, o que aumenta latência, consumo de CPU e overhead por request;
+- não existe pool de conexões nativo do banco;
+- escrita e leitura compartilham a mesma tabela, o que reduz isolamento entre workloads;
+- métricas ficam apenas em memória do processo, sem integração com tracing ou exporter dedicado;
+- não há migrations versionadas nem estratégia clara de evolução de schema;
+- o manifesto Kubernetes usa apenas 1 réplica e não define requests/limits nem autoscaling.
+
+### Próximos passos prioritários
+
+1. substituir `psql` por driver Go (`pgx` ou `database/sql`) com pool de conexões;
+2. separar read model e write model se a volumetria de consulta crescer;
+3. adicionar migrations versionadas e automação de rollout;
+4. instrumentar métricas/tracing com stack padrão de observabilidade;
+5. configurar readiness/liveness com recursos, réplicas e HPA no Kubernetes.
+
 ## Infra local
 
 - `Dockerfile`: build multi-stage da aplicação.
@@ -143,8 +169,7 @@ curl -X POST http://localhost:8080/api/v1/emv/transactions \
 go test ./...
 ```
 
-## Próximos passos sugeridos
+## Documentação complementar
 
-- Evoluir o read side para tabela/materialized view dedicada.
-- Adicionar migrations versionadas.
-- Incluir testes de integração com PostgreSQL via container efêmero.
+- [Arquitetura e escalabilidade](docs/architecture.md)
+
