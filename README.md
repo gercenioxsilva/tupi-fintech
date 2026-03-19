@@ -39,7 +39,7 @@ A arquitetura detalhada agora está documentada em [`docs/architecture.md`](docs
 
 - **Vertical slice**: o slice `transactions` encapsula domínio, aplicação, infraestrutura e interface HTTP.
 - **DDD + SOLID**: o domínio concentra invariantes; a aplicação orquestra casos de uso; a infraestrutura implementa adaptadores; a interface HTTP expõe contratos externos.
-- **CQRS pragmático**: comandos e consultas já possuem serviços separados, embora ainda compartilhem a mesma tabela PostgreSQL.
+- **CQRS pragmático**: comandos e consultas já possuem serviços separados; hoje compartilham a mesma tabela PostgreSQL, mas a arquitetura permite evoluir para tabelas distintas de write model e read model.
 - **Observabilidade básica**: há logs estruturados, métricas em memória expostas em `/metrics` e endpoints operacionais como `/healthz`.
 
 ## Endpoints
@@ -93,8 +93,44 @@ go run ./cmd/api
 
 ### Com Docker Compose
 
+Passo a passo para subir todo o ambiente localmente:
+
+1. Na raiz do projeto, garanta que as portas `5432` e `8080` estejam livres.
+2. Construa a imagem da API e suba os containers:
+
 ```bash
 docker compose up --build
+```
+
+3. Aguarde o `postgres` ficar saudável e a API iniciar. O `docker-compose.yml` já define o `depends_on` com `condition: service_healthy`, então a aplicação só sobe depois do banco responder ao healthcheck.
+4. Em outro terminal, valide se os containers estão em execução:
+
+```bash
+docker compose ps
+```
+
+5. Teste o healthcheck da API:
+
+```bash
+curl http://localhost:8080/healthz
+```
+
+6. Se quiser acompanhar os logs da aplicação:
+
+```bash
+docker compose logs -f api
+```
+
+7. Para derrubar o ambiente:
+
+```bash
+docker compose down
+```
+
+8. Para derrubar e remover também o volume do PostgreSQL, reiniciando o banco do zero:
+
+```bash
+docker compose down -v
 ```
 
 Depois de subir a aplicação, acesse:
@@ -103,6 +139,29 @@ Depois de subir a aplicação, acesse:
 - `http://localhost:8080/openapi.json`
 - `http://localhost:8080/healthz`
 - `http://localhost:8080/metrics`
+
+### Separação entre tabela de escrita e tabela de leitura
+
+Sim, **é totalmente possível** separar as tabelas de leitura e escrita neste projeto. A base atual já ajuda nessa evolução porque a aplicação possui `CommandService` e `QueryService` distintos, ainda que hoje ambos usem o mesmo repositório e a mesma tabela.
+
+Uma evolução natural seria:
+
+1. o command side continuar persistindo a transação canônica em uma tabela de escrita, por exemplo `transactions_write`;
+2. após a persistência, a aplicação atualizar uma tabela de leitura otimizada, por exemplo `transactions_read`;
+3. o `QueryService` passar a ler somente da tabela de leitura;
+4. a tabela de leitura poder ter índices e colunas moldados para consulta, sem impactar o modelo transacional de escrita.
+
+Benefícios esperados:
+
+- menor contenção entre escrita e leitura;
+- liberdade para criar projeções específicas para listagem e busca;
+- caminho mais claro para read replicas, cache ou atualização assíncrona no futuro.
+
+Trade-offs a considerar:
+
+- maior complexidade de sincronização entre write model e read model;
+- necessidade de definir consistência síncrona ou eventual;
+- necessidade de migrations e observabilidade melhores para operar duas projeções.
 
 ## Variáveis de ambiente
 
