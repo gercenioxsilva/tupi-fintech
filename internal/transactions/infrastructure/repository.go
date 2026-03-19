@@ -31,6 +31,7 @@ func (r *PostgresRepository) migrate(ctx context.Context) error {
 	const query = `
 CREATE TABLE IF NOT EXISTS transactions (
     correlation_id TEXT PRIMARY KEY,
+    idempotency_key TEXT,
     pan TEXT NOT NULL,
     expiry_date TEXT NOT NULL,
     cvm TEXT NOT NULL,
@@ -44,6 +45,10 @@ CREATE TABLE IF NOT EXISTS transactions (
     authorized_at TIMESTAMPTZ NOT NULL,
     status TEXT NOT NULL
 );
+ALTER TABLE transactions ADD COLUMN IF NOT EXISTS idempotency_key TEXT;
+UPDATE transactions SET idempotency_key = correlation_id WHERE idempotency_key IS NULL;
+ALTER TABLE transactions ALTER COLUMN idempotency_key SET NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS idx_transactions_idempotency_key ON transactions (idempotency_key);
 CREATE INDEX IF NOT EXISTS idx_transactions_processed_at ON transactions (processed_at DESC);
 `
 	return r.execStatement(ctx, query)
@@ -56,10 +61,11 @@ func (r *PostgresRepository) Save(ctx context.Context, record application.Proces
 	}
 	query := fmt.Sprintf(`
 INSERT INTO transactions (
-    correlation_id, pan, expiry_date, cvm, amount, currency, tlvs,
+    correlation_id, idempotency_key, pan, expiry_date, cvm, amount, currency, tlvs,
     processed_at, approved, authorization_code, authorization_message, authorized_at, status
-) VALUES (%s,%s,%s,%s,%d,%s,%s::jsonb,%s,%t,%s,%s,%s,%s)
+) VALUES (%s,%s,%s,%s,%s,%d,%s,%s::jsonb,%s,%t,%s,%s,%s,%s)
 ON CONFLICT (correlation_id) DO UPDATE SET
+    idempotency_key = EXCLUDED.idempotency_key,
     pan = EXCLUDED.pan,
     expiry_date = EXCLUDED.expiry_date,
     cvm = EXCLUDED.cvm,
@@ -72,13 +78,14 @@ ON CONFLICT (correlation_id) DO UPDATE SET
     authorization_message = EXCLUDED.authorization_message,
     authorized_at = EXCLUDED.authorized_at,
     status = EXCLUDED.status;
-`, sqlLiteral(record.Authorization.CorrelationID), sqlLiteral(record.Transaction.PAN), sqlLiteral(record.Transaction.ExpiryDate), sqlLiteral(record.Transaction.CVM), record.Transaction.Amount, sqlLiteral(record.Transaction.Currency), sqlLiteral(string(tlvs)), sqlLiteral(record.Transaction.ProcessedAt.UTC().Format(time.RFC3339Nano)), record.Authorization.Approved, sqlLiteral(record.Authorization.Code), sqlLiteral(record.Authorization.Message), sqlLiteral(record.Authorization.AuthorizedAt.UTC().Format(time.RFC3339Nano)), sqlLiteral(record.Status))
+`, sqlLiteral(record.Authorization.CorrelationID), sqlLiteral(record.IdempotencyKey), sqlLiteral(record.Transaction.PAN), sqlLiteral(record.Transaction.ExpiryDate), sqlLiteral(record.Transaction.CVM), record.Transaction.Amount, sqlLiteral(record.Transaction.Currency), sqlLiteral(string(tlvs)), sqlLiteral(record.Transaction.ProcessedAt.UTC().Format(time.RFC3339Nano)), record.Authorization.Approved, sqlLiteral(record.Authorization.Code), sqlLiteral(record.Authorization.Message), sqlLiteral(record.Authorization.AuthorizedAt.UTC().Format(time.RFC3339Nano)), sqlLiteral(record.Status))
 	return r.execStatement(ctx, query)
 }
 
 func (r *PostgresRepository) List(ctx context.Context, limit int) ([]application.ProcessedTransaction, error) {
 	query := fmt.Sprintf(`COPY (
 SELECT json_build_object(
+    'idempotency_key', idempotency_key,
     'transaction', json_build_object(
         'pan', pan,
         'expiry_date', expiry_date,
@@ -107,6 +114,7 @@ LIMIT %d
 func (r *PostgresRepository) GetByCorrelationID(ctx context.Context, correlationID string) (application.ProcessedTransaction, error) {
 	query := fmt.Sprintf(`COPY (
 SELECT json_build_object(
+    'idempotency_key', idempotency_key,
     'transaction', json_build_object(
         'pan', pan,
         'expiry_date', expiry_date,
@@ -128,6 +136,41 @@ SELECT json_build_object(
 FROM transactions
 WHERE correlation_id = %s
 ) TO STDOUT;`, sqlLiteral(correlationID))
+	records, err := r.queryRecords(ctx, query)
+	if err != nil {
+		return application.ProcessedTransaction{}, err
+	}
+	if len(records) == 0 {
+		return application.ProcessedTransaction{}, application.ErrNotFound
+	}
+	return records[0], nil
+}
+
+func (r *PostgresRepository) GetByIdempotencyKey(ctx context.Context, idempotencyKey string) (application.ProcessedTransaction, error) {
+	query := fmt.Sprintf(`COPY (
+SELECT json_build_object(
+    'idempotency_key', idempotency_key,
+    'transaction', json_build_object(
+        'pan', pan,
+        'expiry_date', expiry_date,
+        'cvm', cvm,
+        'amount', amount,
+        'currency', currency,
+        'tlvs', tlvs,
+        'processed_at', processed_at
+    ),
+    'authorization', json_build_object(
+        'approved', approved,
+        'code', authorization_code,
+        'message', authorization_message,
+        'authorized_at', authorized_at,
+        'correlation_id', correlation_id
+    ),
+    'status', status
+)
+FROM transactions
+WHERE idempotency_key = %s
+) TO STDOUT;`, sqlLiteral(idempotencyKey))
 	records, err := r.queryRecords(ctx, query)
 	if err != nil {
 		return application.ProcessedTransaction{}, err
