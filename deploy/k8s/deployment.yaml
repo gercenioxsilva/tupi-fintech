@@ -1,0 +1,49 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: emv-api
+  labels:
+    app: emv-api
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: emv-api
+  template:
+    metadata:
+      labels:
+        app: emv-api
+    spec:
+      containers:
+        - name: emv-api
+          image: emv-api:local
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          env:
+            - name: HTTP_ADDRESS
+              value: ":8080"
+            - name: APP_ENV
+              value: "kubernetes"
+            - name: DATABASE_PATH
+              value: "/tmp/transactions.jsonl"
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: emv-api
+spec:
+  selector:
+    app: emv-api
+  ports:
+    - port: 80
+      targetPort: 8080
+      protocol: TCP
