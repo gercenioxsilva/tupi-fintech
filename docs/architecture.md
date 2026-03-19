@@ -181,7 +181,7 @@ Isso simplifica o setup local, porém traz riscos para produção:
 
 ### Escalabilidade horizontal da API
 
-**Boa**, porque a camada HTTP é stateless e o processamento é síncrono/determinístico.
+**Boa**, porque a camada HTTP é stateless e o processamento é síncrono.
 
 ### Escalabilidade da persistência
 
