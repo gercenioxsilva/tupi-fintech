@@ -46,7 +46,7 @@ A arquitetura detalhada agora está documentada em [`docs/architecture.md`](docs
 
 ### `POST /api/v1/emv/transactions`
 
-Processa uma transação EMV.
+Processa uma transação EMV de forma idempotente. O header `Idempotency-Key` é obrigatório e garante replay seguro da mesma intenção de pagamento.
 
 ### `GET /api/v1/emv/transactions?limit=50`
 
@@ -163,6 +163,18 @@ Trade-offs a considerar:
 - necessidade de definir consistência síncrona ou eventual;
 - necessidade de migrations e observabilidade melhores para operar duas projeções.
 
+## Idempotência no POST de pagamento
+
+O endpoint `POST /api/v1/emv/transactions` agora exige o header `Idempotency-Key`.
+
+Comportamento esperado:
+
+- mesma `Idempotency-Key` + mesmo payload/valor: a API retorna a mesma resposta já processada, sem reautorizar a transação;
+- mesma `Idempotency-Key` + payload ou valor diferente: a API retorna conflito (`409`);
+- ausência do header: a API retorna erro de requisição inválida (`400`).
+
+Isso evita reprocessamento acidental em cenários de retry e vincula a unicidade à intenção de pagamento, em vez de depender apenas do valor da transação.
+
 ## Variáveis de ambiente
 
 - `HTTP_ADDRESS` (default `:8080`)
@@ -180,6 +192,7 @@ Trade-offs a considerar:
 ```bash
 curl -X POST http://localhost:8080/api/v1/emv/transactions \
   -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: pay-123' \
   -d '{
     "tlv_payload": "5A0841111111111111115F24033012319F34031E0300",
     "amount": 1500,

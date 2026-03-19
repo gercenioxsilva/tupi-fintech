@@ -30,12 +30,16 @@ func (h Handler) ProcessTransaction(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid JSON payload"})
 		return
 	}
+	command.IdempotencyKey = strings.TrimSpace(r.Header.Get("Idempotency-Key"))
 
 	processed, err := h.commands.Process(r.Context(), command)
 	if err != nil {
 		status := http.StatusUnprocessableEntity
-		if errors.Is(err, application.ErrInvalidRequest) {
+		switch {
+		case errors.Is(err, application.ErrInvalidRequest):
 			status = http.StatusBadRequest
+		case errors.Is(err, application.ErrIdempotencyConflict):
+			status = http.StatusConflict
 		}
 		h.logger.Warn("failed to process transaction", slog.Any("error", err))
 		httpx.WriteJSON(w, status, map[string]string{"error": err.Error()})
