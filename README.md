@@ -1,17 +1,18 @@
 # Desafio Técnico EMV - Go
 
-Implementação de uma API em Go para processamento básico de transações EMV baseada em **vertical slice architecture**, com separação inspirada em **DDD**, princípios **SOLID**, testes unitários, observabilidade, persistência em arquivo JSON Lines, execução local em Docker e manifesto Kubernetes.
+Implementação de uma API em Go para processamento de transações EMV baseada em **vertical slice architecture**, com separação inspirada em **DDD**, princípios **SOLID**, **CQRS leve** para leitura/escrita, persistência em **PostgreSQL**, execução local via **Docker Compose**, observabilidade e documentação OpenAPI/Swagger.
 
 ## Visão geral
 
-O fluxo implementado atende ao desafio original:
+O fluxo atualizado atende ao desafio original e agora separa explicitamente os caminhos de comando e consulta:
 
 1. Recebe uma transação EMV simulada via HTTP.
 2. Decodifica TLVs (`5A`, `5F24`, `9F34`).
-3. Valida PAN, data de validade e CVM.
+3. Valida PAN, data de validade e CVM no domínio.
 4. Simula autorização em um gateway mock determinístico.
-5. Persiste o log da transação em arquivo JSON Lines.
-6. Expõe healthcheck, métricas Prometheus e documentação Swagger/OpenAPI.
+5. Persiste o resultado em PostgreSQL por meio da camada de escrita.
+6. Expõe consultas de leitura desacopladas do fluxo de comando.
+7. Mantém healthcheck, métricas Prometheus e documentação Swagger/OpenAPI.
 
 ## Arquitetura
 
@@ -19,70 +20,50 @@ O fluxo implementado atende ao desafio original:
 cmd/api                          # bootstrap da aplicação
 internal/platform                # config, observabilidade e utilitários HTTP
 internal/transactions
-├── application                  # casos de uso e portas
+├── application                  # casos de uso CQRS e portas
 ├── domain                       # entidades e regras de negócio
-├── infrastructure               # persistência em arquivo, decoder TLV, authorizer mock
+├── infrastructure               # postgres, decoder TLV, authorizer mock
 └── interfaces/http              # handlers e roteamento
 ```
 
 ### Vertical slice
 
-A funcionalidade de transações EMV está isolada dentro de `internal/transactions`, contendo todas as camadas necessárias para o slice de negócio.
+O slice `transactions` continua encapsulando domínio, aplicação, infraestrutura e interface HTTP, preservando o padrão vertical slice.
 
 ### DDD + SOLID
 
-- **Domain** concentra as regras de validação do cartão.
-- **Application** orquestra o caso de uso usando interfaces/ports.
-- **Infrastructure** implementa adaptadores externos.
-- **Interfaces** expõe a API HTTP.
-- Dependências são invertidas via interfaces.
-- Cada componente tem responsabilidade única.
+- **Domain** concentra invariantes e validações.
+- **Application** separa `CommandService` e `QueryService`.
+- **Infrastructure** implementa adaptadores PostgreSQL e integrações externas.
+- **Interfaces** expõe endpoints HTTP sem acoplamento ao banco.
+- Dependências seguem inversion via interfaces (`TransactionWriter` e `TransactionReader`).
+
+### CQRS aplicado
+
+A adoção de CQRS foi considerada viável porque o fluxo já possuía um caso de uso de escrita bem definido. A implementação foi feita de maneira pragmática:
+
+- **Comandos**: `POST /api/v1/emv/transactions` processa e grava a transação.
+- **Consultas**: `GET /api/v1/emv/transactions` e `GET /api/v1/emv/transactions/{correlationId}` usam a projeção de leitura persistida.
+
+Ainda usamos a mesma tabela PostgreSQL para evitar complexidade prematura, mas o contrato de aplicação já separa leitura e escrita, facilitando futura evolução para read models dedicados.
 
 ## Endpoints
 
 ### `POST /api/v1/emv/transactions`
 
-Request:
+Processa uma transação EMV.
 
-```json
-{
-  "tlv_payload": "5A0841111111111111115F24033012319F34031E0300",
-  "amount": 1500,
-  "currency": "BRL"
-}
-```
+### `GET /api/v1/emv/transactions?limit=50`
 
-Response:
+Lista as transações mais recentes da projeção de leitura.
 
-```json
-{
-  "transaction": {
-    "pan": "4111111111111111",
-    "expiry_date": "301231",
-    "cvm": "1E0300",
-    "amount": 1500,
-    "currency": "BRL",
-    "tlvs": {
-      "5A": "4111111111111111",
-      "5F24": "301231",
-      "9F34": "1E0300"
-    },
-    "processed_at": "2026-03-19T00:00:00Z"
-  },
-  "authorization": {
-    "approved": true,
-    "code": "00",
-    "message": "approved",
-    "authorized_at": "2026-03-19T00:00:00Z",
-    "correlation_id": "..."
-  },
-  "status": "approved"
-}
-```
+### `GET /api/v1/emv/transactions/{correlationId}`
+
+Consulta uma transação específica pelo `correlation_id` retornado na autorização.
 
 ### `GET /healthz`
 
-Healthcheck para Kubernetes.
+Healthcheck para Docker/Kubernetes.
 
 ### `GET /metrics`
 
@@ -101,36 +82,42 @@ Interface Swagger UI para explorar e testar os endpoints da aplicação.
 ### Requisitos
 
 - Go 1.23+
-- Docker (opcional)
+- Docker + Docker Compose
 
 ### Com Go
+
+1. Suba o PostgreSQL localmente.
+2. Configure `POSTGRES_URL`.
+3. Execute:
 
 ```bash
 go mod tidy
 go run ./cmd/api
 ```
 
-Depois de subir a aplicação, acesse `http://localhost:8080/swagger` para abrir o Swagger UI ou `http://localhost:8080/openapi.json` para consumir a especificação OpenAPI.
-
-### Com Docker
+### Com Docker Compose
 
 ```bash
-docker build -t emv-api:local .
-docker run --rm -p 8080:8080 -e DATABASE_PATH='/tmp/transactions.jsonl' emv-api:local
+docker compose up --build
 ```
+
+Depois de subir a aplicação, acesse:
+
+- `http://localhost:8080/swagger`
+- `http://localhost:8080/openapi.json`
+- `http://localhost:8080/healthz`
 
 ## Variáveis de ambiente
 
 - `HTTP_ADDRESS` (default `:8080`)
 - `LOG_LEVEL` (default `INFO`)
-- `DATABASE_PATH` (default `./data/transactions.jsonl`)
 - `APP_ENV` (default `local`)
-
-## Testes
-
-```bash
-go test ./...
-```
+- `POSTGRES_URL` (default `postgres://postgres:postgres@localhost:5432/tupi_fintech?sslmode=disable`)
+- `POSTGRES_HOST` (default `localhost`)
+- `POSTGRES_PORT` (default `5432`)
+- `POSTGRES_DB` (default `tupi_fintech`)
+- `POSTGRES_USER` (default `postgres`)
+- `POSTGRES_PASSWORD` (default `postgres`)
 
 ## Exemplo com curl
 
@@ -144,20 +131,20 @@ curl -X POST http://localhost:8080/api/v1/emv/transactions \
   }'
 ```
 
-## Docker e Kubernetes
+## Infra local
 
-- `Dockerfile`: build multi-stage, imagem mínima para execução local.
-- `deploy/k8s/deployment.yaml`: Deployment + Service prontos para cluster.
+- `Dockerfile`: build multi-stage da aplicação.
+- `docker-compose.yml`: sobe API + PostgreSQL para desenvolvimento local.
+- `deploy/k8s/deployment.yaml`: manifesto base para Kubernetes.
 
-## Observabilidade
+## Testes
 
-- Logs estruturados em JSON com `log/slog`.
-- Métricas Prometheus em `/metrics`.
-- Endpoint `/healthz` para readiness/liveness.
-- Documentação OpenAPI em `/openapi.json` e Swagger UI em `/swagger`.
+```bash
+go test ./...
+```
 
 ## Próximos passos sugeridos
 
-- Adicionar tracing distribuído com OpenTelemetry.
-- Criar testes de integração end-to-end com arquivo temporário e cenários HTTP.
-- Evoluir autorização mock para provider externo configurável.
+- Evoluir o read side para tabela/materialized view dedicada.
+- Adicionar migrations versionadas.
+- Incluir testes de integração com PostgreSQL via container efêmero.

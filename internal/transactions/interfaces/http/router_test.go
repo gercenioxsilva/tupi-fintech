@@ -19,7 +19,8 @@ func TestOpenAPISpecEndpoint(t *testing.T) {
 		config.Config{HTTPAddress: ":8080", Environment: "test"},
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		observability.NewMetrics(),
-		&application.Service{},
+		&application.CommandService{},
+		&application.QueryService{},
 	)
 
 	req := httptest.NewRequest(http.MethodGet, "/openapi.json", nil)
@@ -61,7 +62,8 @@ func TestSwaggerUIEndpoint(t *testing.T) {
 		config.Config{HTTPAddress: ":8080", Environment: "test"},
 		slog.New(slog.NewTextHandler(io.Discard, nil)),
 		observability.NewMetrics(),
-		&application.Service{},
+		&application.CommandService{},
+		&application.QueryService{},
 	)
 
 	req := httptest.NewRequest(http.MethodGet, "/swagger", nil)

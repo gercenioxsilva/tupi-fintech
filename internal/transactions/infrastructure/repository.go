@@ -1,44 +1,186 @@
 package infrastructure
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
-	"path/filepath"
-	"sync"
+	"os/exec"
+	"strings"
+	"time"
 
 	"github.com/tupi-fintech/desafio-tecnico/internal/transactions/application"
 )
 
-type FileRepository struct {
-	path string
-	mu   sync.Mutex
+type PostgresRepository struct {
+	connectionString string
 }
 
-func NewFileRepository(path string) (*FileRepository, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil && filepath.Dir(path) != "." {
-		return nil, fmt.Errorf("create log directory: %w", err)
+func NewPostgresRepository(connectionString string) (*PostgresRepository, error) {
+	repo := &PostgresRepository{connectionString: connectionString}
+	if err := repo.migrate(context.Background()); err != nil {
+		return nil, err
 	}
-	return &FileRepository{path: path}, nil
+	return repo, nil
 }
 
-func (r *FileRepository) Close() error { return nil }
+func (r *PostgresRepository) Close() error { return nil }
 
-func (r *FileRepository) Save(_ context.Context, record application.ProcessedTransaction) error {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	file, err := os.OpenFile(r.path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+func (r *PostgresRepository) migrate(ctx context.Context) error {
+	const query = `
+CREATE TABLE IF NOT EXISTS transactions (
+    correlation_id TEXT PRIMARY KEY,
+    pan TEXT NOT NULL,
+    expiry_date TEXT NOT NULL,
+    cvm TEXT NOT NULL,
+    amount BIGINT NOT NULL,
+    currency TEXT NOT NULL,
+    tlvs JSONB NOT NULL,
+    processed_at TIMESTAMPTZ NOT NULL,
+    approved BOOLEAN NOT NULL,
+    authorization_code TEXT NOT NULL,
+    authorization_message TEXT NOT NULL,
+    authorized_at TIMESTAMPTZ NOT NULL,
+    status TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_transactions_processed_at ON transactions (processed_at DESC);
+`
+	return r.execStatement(ctx, query)
+}
+
+func (r *PostgresRepository) Save(ctx context.Context, record application.ProcessedTransaction) error {
+	tlvs, err := json.Marshal(record.Transaction.TLVs)
 	if err != nil {
-		return fmt.Errorf("open transaction log file: %w", err)
+		return fmt.Errorf("marshal tlvs: %w", err)
 	}
-	defer file.Close()
-	payload, err := json.Marshal(record)
+	query := fmt.Sprintf(`
+INSERT INTO transactions (
+    correlation_id, pan, expiry_date, cvm, amount, currency, tlvs,
+    processed_at, approved, authorization_code, authorization_message, authorized_at, status
+) VALUES (%s,%s,%s,%s,%d,%s,%s::jsonb,%s,%t,%s,%s,%s,%s)
+ON CONFLICT (correlation_id) DO UPDATE SET
+    pan = EXCLUDED.pan,
+    expiry_date = EXCLUDED.expiry_date,
+    cvm = EXCLUDED.cvm,
+    amount = EXCLUDED.amount,
+    currency = EXCLUDED.currency,
+    tlvs = EXCLUDED.tlvs,
+    processed_at = EXCLUDED.processed_at,
+    approved = EXCLUDED.approved,
+    authorization_code = EXCLUDED.authorization_code,
+    authorization_message = EXCLUDED.authorization_message,
+    authorized_at = EXCLUDED.authorized_at,
+    status = EXCLUDED.status;
+`, sqlLiteral(record.Authorization.CorrelationID), sqlLiteral(record.Transaction.PAN), sqlLiteral(record.Transaction.ExpiryDate), sqlLiteral(record.Transaction.CVM), record.Transaction.Amount, sqlLiteral(record.Transaction.Currency), sqlLiteral(string(tlvs)), sqlLiteral(record.Transaction.ProcessedAt.UTC().Format(time.RFC3339Nano)), record.Authorization.Approved, sqlLiteral(record.Authorization.Code), sqlLiteral(record.Authorization.Message), sqlLiteral(record.Authorization.AuthorizedAt.UTC().Format(time.RFC3339Nano)), sqlLiteral(record.Status))
+	return r.execStatement(ctx, query)
+}
+
+func (r *PostgresRepository) List(ctx context.Context, limit int) ([]application.ProcessedTransaction, error) {
+	query := fmt.Sprintf(`COPY (
+SELECT json_build_object(
+    'transaction', json_build_object(
+        'pan', pan,
+        'expiry_date', expiry_date,
+        'cvm', cvm,
+        'amount', amount,
+        'currency', currency,
+        'tlvs', tlvs,
+        'processed_at', processed_at
+    ),
+    'authorization', json_build_object(
+        'approved', approved,
+        'code', authorization_code,
+        'message', authorization_message,
+        'authorized_at', authorized_at,
+        'correlation_id', correlation_id
+    ),
+    'status', status
+)
+FROM transactions
+ORDER BY processed_at DESC
+LIMIT %d
+) TO STDOUT;`, limit)
+	return r.queryRecords(ctx, query)
+}
+
+func (r *PostgresRepository) GetByCorrelationID(ctx context.Context, correlationID string) (application.ProcessedTransaction, error) {
+	query := fmt.Sprintf(`COPY (
+SELECT json_build_object(
+    'transaction', json_build_object(
+        'pan', pan,
+        'expiry_date', expiry_date,
+        'cvm', cvm,
+        'amount', amount,
+        'currency', currency,
+        'tlvs', tlvs,
+        'processed_at', processed_at
+    ),
+    'authorization', json_build_object(
+        'approved', approved,
+        'code', authorization_code,
+        'message', authorization_message,
+        'authorized_at', authorized_at,
+        'correlation_id', correlation_id
+    ),
+    'status', status
+)
+FROM transactions
+WHERE correlation_id = %s
+) TO STDOUT;`, sqlLiteral(correlationID))
+	records, err := r.queryRecords(ctx, query)
 	if err != nil {
-		return fmt.Errorf("marshal transaction log: %w", err)
+		return application.ProcessedTransaction{}, err
 	}
-	if _, err := file.Write(append(payload, '\n')); err != nil {
-		return fmt.Errorf("append transaction log: %w", err)
+	if len(records) == 0 {
+		return application.ProcessedTransaction{}, application.ErrNotFound
+	}
+	return records[0], nil
+}
+
+func (r *PostgresRepository) execStatement(ctx context.Context, query string) error {
+	cmd := exec.CommandContext(ctx, "psql", r.connectionString, "-v", "ON_ERROR_STOP=1", "-X", "-q", "-c", query)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("execute psql statement: %w: %s", err, strings.TrimSpace(string(output)))
 	}
 	return nil
 }
+
+func (r *PostgresRepository) queryRecords(ctx context.Context, query string) ([]application.ProcessedTransaction, error) {
+	cmd := exec.CommandContext(ctx, "psql", r.connectionString, "-v", "ON_ERROR_STOP=1", "-X", "-q", "-t", "-A", "-c", query)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return nil, fmt.Errorf("execute psql query: %w: %s", err, strings.TrimSpace(string(output)))
+	}
+	var records []application.ProcessedTransaction
+	scanner := bufio.NewScanner(bytes.NewReader(output))
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" {
+			continue
+		}
+		var record application.ProcessedTransaction
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			return nil, fmt.Errorf("decode transaction row: %w", err)
+		}
+		records = append(records, normalizeRecord(record))
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("scan query result: %w", err)
+	}
+	return records, nil
+}
+
+func normalizeRecord(record application.ProcessedTransaction) application.ProcessedTransaction {
+	record.Transaction.ProcessedAt = record.Transaction.ProcessedAt.UTC()
+	record.Authorization.AuthorizedAt = record.Authorization.AuthorizedAt.UTC()
+	return record
+}
+
+func sqlLiteral(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
+}
+
+var _ application.TransactionWriter = (*PostgresRepository)(nil)
+var _ application.TransactionReader = (*PostgresRepository)(nil)

@@ -25,8 +25,8 @@ spec:
               value: ":8080"
             - name: APP_ENV
               value: "kubernetes"
-            - name: DATABASE_PATH
-              value: "/tmp/transactions.jsonl"
+            - name: POSTGRES_URL
+              value: "postgres://postgres:postgres@postgres:5432/tupi_fintech?sslmode=disable"
           readinessProbe:
             httpGet:
               path: /healthz
