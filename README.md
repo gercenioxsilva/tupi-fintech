@@ -9,7 +9,7 @@ O fluxo atualizado atende ao desafio original e separa explicitamente os caminho
 1. Recebe uma transação EMV simulada via HTTP.
 2. Decodifica TLVs (`5A`, `5F24`, `9F34`).
 3. Valida PAN, data de validade e CVM no domínio.
-4. Simula autorização em um gateway mock determinístico.
+4. Simula autorização em um gateway mock aleatório.
 5. Persiste o resultado em PostgreSQL por meio da camada de escrita.
 6. Expõe consultas de leitura desacopladas do fluxo de comando.
 7. Mantém healthcheck, métricas Prometheus e documentação Swagger/OpenAPI.
@@ -169,6 +169,7 @@ O endpoint `POST /api/v1/emv/transactions` agora exige o header `Idempotency-Key
 
 Comportamento esperado:
 
+- primeira chamada com uma nova `Idempotency-Key`: a autorização mock pode aprovar ou rejeitar aleatoriamente;
 - mesma `Idempotency-Key` + mesmo payload/valor: a API retorna a mesma resposta já processada, sem reautorizar a transação;
 - mesma `Idempotency-Key` + payload ou valor diferente: a API retorna conflito (`409`);
 - ausência do header: a API retorna erro de requisição inválida (`400`).
@@ -188,6 +189,21 @@ Isso evita reprocessamento acidental em cenários de retry e vincula a unicidade
 - `POSTGRES_PASSWORD` (default `postgres`)
 
 ## Exemplo com curl
+
+Primeira chamada: a autorização mock pode aprovar ou rejeitar aleatoriamente.
+
+```bash
+curl -X POST http://localhost:8080/api/v1/emv/transactions \
+  -H 'Content-Type: application/json' \
+  -H 'Idempotency-Key: pay-123' \
+  -d '{
+    "tlv_payload": "5A0841111111111111115F24033012319F34031E0300",
+    "amount": 1500,
+    "currency": "BRL"
+  }'
+```
+
+Retry seguro com a mesma `Idempotency-Key`: a API devolve a mesma resposta da primeira tentativa, mesmo que o mock de autorização seja aleatório.
 
 ```bash
 curl -X POST http://localhost:8080/api/v1/emv/transactions \

@@ -10,7 +10,7 @@ func openAPISpec(serverURL, environment string) map[string]any {
 		"openapi": "3.0.3",
 		"info": map[string]any{
 			"title":       "Tupi Fintech EMV API",
-			"description": "API para processamento de transações EMV com CQRS, PostgreSQL, observabilidade e documentação Swagger.",
+			"description": "API para processamento de transações EMV com mock de autorização aleatória, idempotência, PostgreSQL, observabilidade e documentação Swagger.",
 			"version":     "1.2.0",
 		},
 		"servers": []map[string]string{{
@@ -27,13 +27,13 @@ func openAPISpec(serverURL, environment string) map[string]any {
 			"/api/v1/emv/transactions": map[string]any{
 				"post": map[string]any{
 					"tags":        []string{"Transactions"},
-					"summary":     "Processa uma transação EMV de forma idempotente",
+					"summary":     "Processa uma transação EMV com mock aleatório e idempotência",
 					"operationId": "processTransaction",
 					"parameters": []map[string]any{{
 						"name":        "Idempotency-Key",
 						"in":          "header",
 						"required":    true,
-						"description": "Chave única da intenção de pagamento. Repetições com a mesma chave e o mesmo payload retornam a mesma resposta; reuso com dados diferentes retorna conflito.",
+						"description": "Chave única da intenção de pagamento. A primeira tentativa passa pelo mock de autorização aleatória; repetições com a mesma chave e o mesmo payload retornam a mesma resposta; reuso com dados diferentes retorna conflito.",
 						"schema":      map[string]any{"type": "string", "minLength": 1},
 					}},
 					"requestBody": map[string]any{"required": true, "content": map[string]any{"application/json": map[string]any{"schema": map[string]any{"$ref": "#/components/schemas/ProcessTransactionCommand"}}}},
