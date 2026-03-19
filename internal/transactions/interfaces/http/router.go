@@ -15,16 +15,17 @@ import (
 )
 
 type Dependencies struct {
-	Service *application.Service
-	repo    interface{ Close() error }
+	Commands *application.CommandService
+	Queries  *application.QueryService
+	repo     interface{ Close() error }
 }
 
 func NewDependencies(cfg config.Config, logger *slog.Logger, metrics *observability.Metrics) (*Dependencies, error) {
-	repo, err := infrastructure.NewFileRepository(cfg.DatabasePath)
+	repo, err := infrastructure.NewPostgresRepository(cfg.PostgresURL)
 	if err != nil {
 		return nil, err
 	}
-	service := application.NewService(
+	commands := application.NewCommandService(
 		infrastructure.TLVDecoder{},
 		infrastructure.MockAuthorizer{},
 		repo,
@@ -32,14 +33,15 @@ func NewDependencies(cfg config.Config, logger *slog.Logger, metrics *observabil
 		logger,
 		metrics,
 	)
-	return &Dependencies{Service: service, repo: repo}, nil
+	queries := application.NewQueryService(repo)
+	return &Dependencies{Commands: commands, Queries: queries, repo: repo}, nil
 }
 
 func (d *Dependencies) Close() error { return d.repo.Close() }
 
-func NewRouter(cfg config.Config, logger *slog.Logger, handlerMetrics *observability.Metrics, service *application.Service) http.Handler {
+func NewRouter(cfg config.Config, logger *slog.Logger, handlerMetrics *observability.Metrics, commands *application.CommandService, queries *application.QueryService) http.Handler {
 	mux := http.NewServeMux()
-	handler := Handler{service: service, logger: logger}
+	handler := Handler{commands: commands, queries: queries, logger: logger}
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		httpx.WriteJSON(w, http.StatusOK, map[string]string{"status": "ok", "env": cfg.Environment})
 	})
@@ -53,6 +55,8 @@ func NewRouter(cfg config.Config, logger *slog.Logger, handlerMetrics *observabi
 	mux.Handle("GET /swagger", swaggerUIHandler())
 	mux.Handle("GET /swagger/", swaggerUIHandler())
 	mux.HandleFunc("POST /api/v1/emv/transactions", handler.ProcessTransaction)
+	mux.HandleFunc("GET /api/v1/emv/transactions", handler.ListTransactions)
+	mux.HandleFunc("GET /api/v1/emv/transactions/", handler.GetTransaction)
 
 	return loggingMiddleware(logger, mux)
 }

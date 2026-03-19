@@ -26,7 +26,7 @@ func main() {
 	}
 	defer deps.Close()
 
-	handler := transport.NewRouter(cfg, logger, metrics, deps.Service)
+	handler := transport.NewRouter(cfg, logger, metrics, deps.Commands, deps.Queries)
 	server := &http.Server{
 		Addr:              cfg.HTTPAddress,
 		Handler:           handler,
