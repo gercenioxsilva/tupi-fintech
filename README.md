@@ -11,7 +11,7 @@ O fluxo implementado atende ao desafio original:
 3. Valida PAN, data de validade e CVM.
 4. Simula autorização em um gateway mock determinístico.
 5. Persiste o log da transação em arquivo JSON Lines.
-6. Expõe healthcheck e métricas Prometheus.
+6. Expõe healthcheck, métricas Prometheus e documentação Swagger/OpenAPI.
 
 ## Arquitetura
 
@@ -88,6 +88,14 @@ Healthcheck para Kubernetes.
 
 Métricas Prometheus.
 
+### `GET /openapi.json`
+
+Especificação OpenAPI 3.0 da API.
+
+### `GET /swagger`
+
+Interface Swagger UI para explorar e testar os endpoints da aplicação.
+
 ## Executando localmente
 
 ### Requisitos
@@ -101,6 +109,8 @@ Métricas Prometheus.
 go mod tidy
 go run ./cmd/api
 ```
+
+Depois de subir a aplicação, acesse `http://localhost:8080/swagger` para abrir o Swagger UI ou `http://localhost:8080/openapi.json` para consumir a especificação OpenAPI.
 
 ### Com Docker
 
@@ -144,6 +154,7 @@ curl -X POST http://localhost:8080/api/v1/emv/transactions \
 - Logs estruturados em JSON com `log/slog`.
 - Métricas Prometheus em `/metrics`.
 - Endpoint `/healthz` para readiness/liveness.
+- Documentação OpenAPI em `/openapi.json` e Swagger UI em `/swagger`.
 
 ## Próximos passos sugeridos
 

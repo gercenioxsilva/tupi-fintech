@@ -4,6 +4,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/tupi-fintech/desafio-tecnico/internal/platform/config"
@@ -46,6 +47,11 @@ func NewRouter(cfg config.Config, logger *slog.Logger, handlerMetrics *observabi
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 		_, _ = w.Write([]byte(handlerMetrics.RenderPrometheus()))
 	})
+	mux.HandleFunc("GET /openapi.json", func(w http.ResponseWriter, r *http.Request) {
+		httpx.WriteJSON(w, http.StatusOK, openAPISpec(serverURL(r, cfg.HTTPAddress), cfg.Environment))
+	})
+	mux.Handle("GET /swagger", swaggerUIHandler())
+	mux.Handle("GET /swagger/", swaggerUIHandler())
 	mux.HandleFunc("POST /api/v1/emv/transactions", handler.ProcessTransaction)
 
 	return loggingMiddleware(logger, mux)
@@ -85,4 +91,21 @@ func (w *statusWriter) Write(p []byte) (int, error) {
 func bodyBytes(r *http.Request) ([]byte, error) {
 	defer r.Body.Close()
 	return io.ReadAll(io.LimitReader(r.Body, 1<<20))
+}
+
+func serverURL(r *http.Request, configuredAddress string) string {
+	if r != nil && r.Host != "" {
+		scheme := "http"
+		if r.TLS != nil || strings.EqualFold(r.Header.Get("X-Forwarded-Proto"), "https") {
+			scheme = "https"
+		}
+		return scheme + "://" + r.Host
+	}
+	if strings.HasPrefix(configuredAddress, ":") {
+		return "http://localhost" + configuredAddress
+	}
+	if strings.HasPrefix(configuredAddress, "http://") || strings.HasPrefix(configuredAddress, "https://") {
+		return configuredAddress
+	}
+	return "http://" + configuredAddress
 }
